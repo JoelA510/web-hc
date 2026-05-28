@@ -1,10 +1,11 @@
-import type { City, FactionId, GameState, Unit } from './types';
+import type { Card, CardId, City, FactionId, FactionState, GameState, Unit } from './types';
 import {
   BUILDINGS, TERRAIN, UNIT_TYPES,
   LIVING_UNIT_TYPES, UNDEAD_UNIT_TYPES,
 } from './constants';
 import { hexDistance, hexKey, neighbors } from './hex';
 import { findPathToward, resolveCityAttack, resolveUnitCombat } from './logic';
+import { performPlayTargetedCard, performPlayUntargetedCard } from '../ui/gameActions';
 
 type AITarget =
   | { q: number; r: number; ref: Unit; kind: 'unit' }
@@ -66,11 +67,159 @@ const performAIAttack = (attacker: Unit, target: AITarget, ns: GameState): void 
   }
 };
 
-// Run the AI's mid-turn actions: unit movement/combat, recruiting, and
-// construction. Assumes applyStartOfSeatTurn has already reset unit flags
-// and that applyEndOfSeatTurn will run afterwards to grant income and city
-// regen uniformly across human and AI seats — do NOT duplicate those here.
+// --- AI card play -----------------------------------------------------------
+//
+// The AI spends its per-turn `orders` on cards through the SAME validated
+// resolvers the human UI uses (performPlayUntargetedCard / performPlayTargetedCard)
+// — no duplicated rule logic. Cards cost only orders, never gold/food, and
+// don't compete with movement/combat/build/recruit (those aren't order-gated),
+// so the AI can empty its order pool on cards and still act with its units.
+//
+// The policy is deterministic (no RNG in the choice) so "Play again (same
+// setup)" stays reproducible and the behavior is testable. Targeted offensive
+// cards are restricted to tiles in the faction's `explored` set, so the AI is
+// not omniscient — it can only curse/sabotage/siege what it has revealed
+// around its own units and cities.
+
+type AICardPlay =
+  | { kind: 'untargeted'; card: Card }
+  | { kind: 'targeted'; card: Card; q: number; r: number };
+
+// Will the AI likely attack this turn? True when some friendly unit has an
+// enemy within its move+range reach. Gates the pre-combat buffs (Rally,
+// Ambush) so the AI doesn't burn them on a quiet turn.
+const aiWillEngage = (ns: GameState, factionId: FactionId): boolean => {
+  const enemies = enemyTargetsFor(ns, factionId);
+  if (!enemies.length) return false;
+  return ns.units.some((u) => {
+    if (u.faction !== factionId) return false;
+    const reach = UNIT_TYPES[u.type].mov + UNIT_TYPES[u.type].range;
+    return enemies.some((t) => hexDistance(u, t) <= reach);
+  });
+};
+
+const cardInHand = (f: FactionState, id: CardId): Card | undefined =>
+  f.hand.find((c) => c.id === id);
+
+// Pick the single best card play for this faction given current state, or
+// null when nothing is worth playing. Re-evaluated each loop iteration so the
+// AI reacts to its own previous plays (e.g. Muster drawing into a Harvest).
+// Priority order, highest first; every branch requires the card be affordable
+// and in hand, and targeted picks pre-validate the target so the resolver
+// never has to reject them.
+const chooseAICardPlay = (ns: GameState, factionId: FactionId): AICardPlay | null => {
+  const f = ns.factions[factionId];
+  if (!f) return null;
+  const affordable = (c: Card | undefined): c is Card => !!c && f.orders >= c.cost;
+  const explored = (q: number, r: number): boolean => f.explored.has(hexKey(q, r));
+
+  // 1. Harvest — free gold, always worth it.
+  const harvest = cardInHand(f, 'harvest');
+  if (affordable(harvest)) return { kind: 'untargeted', card: harvest };
+
+  // 2/3. Pre-combat buffs — only when we expect to fight this turn.
+  if (aiWillEngage(ns, factionId)) {
+    const ambush = cardInHand(f, 'ambush');
+    if (affordable(ambush)) return { kind: 'untargeted', card: ambush };
+    const rally = cardInHand(f, 'rally');
+    if (affordable(rally)) return { kind: 'untargeted', card: rally };
+  }
+
+  // 4. Siege — biggest prize: chip an explored enemy city, weakest first.
+  const siege = cardInHand(f, 'siege');
+  if (affordable(siege)) {
+    const target = ns.cities
+      .filter((c) => c.faction !== factionId && explored(c.q, c.r))
+      .sort((a, b) => a.hp - b.hp)[0];
+    if (target) return { kind: 'targeted', card: siege, q: target.q, r: target.r };
+  }
+
+  // 5. Curse — damage an explored enemy unit, weakest first (prefers a kill).
+  const hex = cardInHand(f, 'hex');
+  if (affordable(hex)) {
+    const target = ns.units
+      .filter((u) => u.faction !== factionId && explored(u.q, u.r))
+      .sort((a, b) => a.hp - b.hp)[0];
+    if (target) return { kind: 'targeted', card: hex, q: target.q, r: target.r };
+  }
+
+  // 6. Heal — mend the most-wounded ally that's missing a meaningful chunk.
+  const heal = cardInHand(f, 'heal');
+  if (affordable(heal)) {
+    const target = ns.units
+      .filter((u) => u.faction === factionId && u.maxHp - u.hp >= 4)
+      .sort((a, b) => (b.maxHp - b.hp) - (a.maxHp - a.hp))[0];
+    if (target) return { kind: 'targeted', card: heal, q: target.q, r: target.r };
+  }
+
+  // 7. Sabotage — drain an explored enemy unit's faction (needs resources to take).
+  const sabotage = cardInHand(f, 'sabotage');
+  if (affordable(sabotage)) {
+    const target = ns.units
+      .filter((u) => {
+        if (u.faction === factionId || !explored(u.q, u.r)) return false;
+        const ef = ns.factions[u.faction];
+        return !!ef && ef.gold + ef.food > 0;
+      })
+      .sort((a, b) => a.id - b.id)[0];
+    if (target) return { kind: 'targeted', card: sabotage, q: target.q, r: target.r };
+  }
+
+  // 8. Feast — economy.
+  const feast = cardInHand(f, 'feast');
+  if (affordable(feast)) return { kind: 'untargeted', card: feast };
+
+  // 9. Muster — refill a thin hand when there are cards left to draw.
+  const muster = cardInHand(f, 'muster');
+  if (affordable(muster) && f.hand.length <= 3 && (f.deck.length + f.discard.length) > 0) {
+    return { kind: 'untargeted', card: muster };
+  }
+
+  // Forced March and Scout are deliberately skipped: AI movement ignores
+  // movBuff (March would be a no-op) and the generalized start-of-turn reveal
+  // already gives the AI vision, so Scout would waste an order.
+  return null;
+};
+
+// Spend the AI's orders on cards via the shared resolvers. Mutates `ns` in
+// place to match runAITurnFor's contract: the resolvers return a fresh state,
+// which we copy back onto the live object with Object.assign. The safety cap
+// is a backstop — orders (3-4/turn) bound the real iteration count.
+export const runAICardPhase = (ns: GameState, factionId: FactionId): void => {
+  let safety = 16;
+  while (safety-- > 0) {
+    if (ns.status === 'ended') break;
+    const f = ns.factions[factionId];
+    if (!f || f.orders <= 0 || f.hand.length === 0) break;
+    const play = chooseAICardPlay(ns, factionId);
+    if (!play) break;
+    if (play.kind === 'untargeted') {
+      const after = performPlayUntargetedCard(ns, factionId, play.card);
+      if (after === ns) break; // resolver rejected — stop (defensive; shouldn't happen)
+      Object.assign(ns, after);
+    } else {
+      const { state: after, valid } = performPlayTargetedCard(ns, factionId, play.card, play.q, play.r);
+      if (!valid) break; // defensive: targets are pre-validated above
+      Object.assign(ns, after);
+    }
+  }
+};
+
+// Run the AI's mid-turn actions: card play, then unit movement/combat,
+// recruiting, and construction. Assumes applyStartOfSeatTurn has already reset
+// unit flags + drawn cards, and that applyEndOfSeatTurn will run afterwards to
+// grant income and city regen uniformly across human and AI seats — do NOT
+// duplicate those here.
 export const runAITurnFor = (ns: GameState, factionId: FactionId): void => {
+  if (!ns.factions[factionId]) return;
+
+  // Card phase first: pre-combat buffs (Rally/Ambush) and economy cards should
+  // land before the movement/combat/build/recruit phases read faction state.
+  // runAICardPhase may replace ns.factions wholesale via Object.assign, so
+  // capture `faction`/`city` only AFTER it runs.
+  runAICardPhase(ns, factionId);
+  if (ns.status === 'ended') return;
+
   const faction = ns.factions[factionId];
   if (!faction) return;
   const city = ns.cities.find((c) => c.faction === factionId);

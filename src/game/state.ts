@@ -91,7 +91,10 @@ export const initialState = (config: GameConfig): GameState => {
     const explored = new Set<HexKey>();
     revealArea(explored, spawn.q, spawn.r, 2);
     const deck = makeStarterDeck(seat.factionId);
-    const hand = seat.kind === 'human' ? deck.splice(0, 4) : [];
+    // Every faction — human or AI — opens with a 4-card hand. Cards are an
+    // order-driven economy separate from gold/food, so AI seats participate
+    // in it too (their start-of-turn draw is generalized in turn.ts).
+    const hand = deck.splice(0, 4);
 
     factions[seat.factionId] = {
       id: seat.factionId,
