@@ -207,6 +207,11 @@ export type GameState = {
   turn: number;
   activeSeatIdx: number;
   seed: number;
+  // Advancing integer seed for the card economy's shuffles (starter decks and
+  // deck-from-discard reshuffles). Persisted so AI/human card order is
+  // reproducible for a given map seed across runs and save/load, rather than
+  // depending on Math.random. Derived from `seed` at game start.
+  cardRng: number;
   config: GameConfig;
   map: TileMap;
   mapCols: number;

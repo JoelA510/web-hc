@@ -190,7 +190,11 @@ export const runAICardPhase = (ns: GameState, factionId: FactionId): void => {
   while (safety-- > 0) {
     if (ns.status === 'ended') break;
     const f = ns.factions[factionId];
-    if (!f || f.orders <= 0 || f.hand.length === 0) break;
+    // NOTE: do not break on `orders <= 0` — cost-0 cards (Harvest) are playable
+    // with zero orders, matching human play. `chooseAICardPlay` only returns
+    // affordable plays, so it yields null once nothing is affordable, which
+    // terminates the loop (and the safety cap backstops it regardless).
+    if (!f || f.hand.length === 0) break;
     const play = chooseAICardPlay(ns, factionId);
     if (!play) break;
     if (play.kind === 'untargeted') {

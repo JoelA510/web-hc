@@ -1,7 +1,7 @@
 import type { FactionId, GameState, HexKey, Seat } from './types';
 import { TERRAIN } from './constants';
 import { hexKey, neighbors } from './hex';
-import { shuffle } from './rng';
+import { seededShuffle } from './rng';
 import { revealArea } from './state';
 
 // Run end-of-turn housekeeping for one seat: yields, city regen, log entry.
@@ -79,8 +79,9 @@ export const applyStartOfSeatTurn = (ns: GameState, factionId: FactionId): void 
   for (let i = 0; i < drawCount; i++) {
     if (hand.length >= 7) break;
     if (!deck.length && discard.length) {
-      const reshuffled = shuffle(discard);
-      deck.push(...reshuffled);
+      const { result, seed } = seededShuffle(discard, ns.cardRng);
+      ns.cardRng = seed;
+      deck.push(...result);
       discard = [];
     }
     const drawn = deck.pop();

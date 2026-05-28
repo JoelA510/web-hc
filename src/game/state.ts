@@ -7,14 +7,16 @@ import {
   LIVING_UNIT_TYPES, UNDEAD_UNIT_TYPES,
 } from './constants';
 import { hexKey, neighbors } from './hex';
-import { mulberry32, shuffle } from './rng';
+import { mulberry32, seededShuffle, deriveCardRngSeed } from './rng';
 import { generateMap, finalizeMap, placeSpawns } from './mapgen';
 import { applyStartOfSeatTurn } from './turn';
 
 // Card uids are namespaced by factionId so two seats with the same card
 // never collide on React `key` or cross-faction card references (e.g. a
 // future "steal an enemy card" effect). Returns strings like "f1:rally#0".
-export const makeStarterDeck = (factionId: FactionId): Card[] => {
+// Shuffled deterministically from `seed`; returns the shuffled deck plus the
+// advanced seed so initialState can thread one RNG stream across all seats.
+export const makeStarterDeck = (factionId: FactionId, seed: number): { deck: Card[]; seed: number } => {
   const deck: Card[] = [];
   let i = 0;
   CARD_POOL.forEach((c) => {
@@ -23,7 +25,8 @@ export const makeStarterDeck = (factionId: FactionId): Card[] => {
       deck.push({ ...c, uid: `${factionId}:${c.id}#${i++}` });
     }
   });
-  return shuffle(deck);
+  const { result, seed: next } = seededShuffle(deck, seed);
+  return { deck: result, seed: next };
 };
 
 const presetById = (id: FactionPresetId) => {
@@ -82,6 +85,10 @@ export const initialState = (config: GameConfig): GameState => {
     moved: 0, acted: false, atkBuff: 0, movBuff: 0, kills: 0, level: 0,
   });
 
+  // Advancing seed for all card shuffles this game, derived from the map seed
+  // and persisted on state so card order is reproducible (see GameState.cardRng).
+  let cardRng = deriveCardRngSeed(seed);
+
   const factions: Partial<Record<FactionId, FactionState>> = {};
   const cities: City[] = [];
   const units: Unit[] = [];
@@ -90,7 +97,8 @@ export const initialState = (config: GameConfig): GameState => {
     const spawn = spawns[i];
     const explored = new Set<HexKey>();
     revealArea(explored, spawn.q, spawn.r, 2);
-    const deck = makeStarterDeck(seat.factionId);
+    const { deck, seed: nextRng } = makeStarterDeck(seat.factionId, cardRng);
+    cardRng = nextRng;
     // Every faction — human or AI — opens with a 4-card hand. Cards are an
     // order-driven economy separate from gold/food, so AI seats participate
     // in it too (their start-of-turn draw is generalized in turn.ts).
@@ -153,6 +161,7 @@ export const initialState = (config: GameConfig): GameState => {
     turn: 1,
     activeSeatIdx: seats[0].idx,
     seed,
+    cardRng,
     config: { ...config, seed, resolvedMapType: resolvedType },
     map: tiles,
     mapCols: cols,

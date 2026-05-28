@@ -3,7 +3,7 @@ import type {
 } from '../game/types';
 import { TERRAIN, UNIT_TYPES, BUILDINGS, BUILDING_REQUIREMENT } from '../game/constants';
 import { hexKey, neighbors } from '../game/hex';
-import { shuffle } from '../game/rng';
+import { seededShuffle } from '../game/rng';
 import { resolveUnitCombat, resolveCityAttack } from '../game/logic';
 import { revealArea, checkVictory } from '../game/state';
 
@@ -231,7 +231,12 @@ export const performPlayUntargetedCard = (s: GameState, factionId: FactionId, ca
     let disc = [...f.discard];
     const hand = [...f.hand];
     for (let i = 0; i < 2; i++) {
-      if (!deck.length && disc.length) { deck = shuffle(disc); disc = []; }
+      if (!deck.length && disc.length) {
+        const r = seededShuffle(disc, ns.cardRng);
+        ns.cardRng = r.seed;
+        deck = r.result;
+        disc = [];
+      }
       const drawn = deck.pop();
       if (drawn) hand.push(drawn);
     }

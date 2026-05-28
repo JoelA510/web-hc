@@ -41,6 +41,19 @@ describe('AI participates in the card economy: dealing + drawing', () => {
     expect(s.factions[humanId].hand.length).toBe(5);
   });
 
+  it('AI deck + opening hand are reproducible for a given seed (seeded shuffle)', () => {
+    // Two games from the same config/seed must produce identical AI card order.
+    // Before the shuffle was seeded this depended on Math.random and diverged.
+    const a = humanVsAI(424242);
+    const b = humanVsAI(424242);
+    const aiId = a.seats[1].factionId;
+    const uids = (s: typeof a, where: 'hand' | 'deck') => s.factions[aiId][where].map((c) => c.uid);
+    expect(uids(a, 'hand')).toEqual(uids(b, 'hand'));
+    expect(uids(a, 'deck')).toEqual(uids(b, 'deck'));
+    // And the AI's hand is non-trivial (sanity: the seeding didn't empty it).
+    expect(a.factions[aiId].hand.length).toBe(4);
+  });
+
   it('AI draws at the start of its turn under the same rule as humans', () => {
     const s0 = humanVsAI(2);
     const aiId = s0.seats[1].factionId;
@@ -84,6 +97,20 @@ describe('AI card play via runAICardPhase', () => {
     expect(s.factions[aiId].totalCardsPlayed).toBe(0);
     expect(s.factions[aiId].orders).toBe(1);
     expect(s.factions[aiId].hand.some((c) => c.uid === rally.uid)).toBe(true);
+  });
+
+  it('still plays a free (cost-0) card at 0 orders, matching human rules', () => {
+    const s0 = humanVsAI(11);
+    const aiId = s0.seats[1].factionId;
+    const s = cloneState(s0);
+    const harvest = forceCard(aiId, 'harvest'); // cost 0
+    s.factions[aiId].hand = [harvest];
+    s.factions[aiId].orders = 0; // no orders left
+    const goldBefore = s.factions[aiId].gold;
+    runAICardPhase(s, aiId);
+    expect(s.factions[aiId].totalCardsPlayed).toBe(1);
+    expect(s.factions[aiId].gold).toBe(goldBefore + 6);
+    expect(s.factions[aiId].hand.length).toBe(0);
   });
 
   it('plays an offensive targeted card against an explored enemy unit', () => {
