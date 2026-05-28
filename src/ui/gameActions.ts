@@ -3,7 +3,7 @@ import type {
 } from '../game/types';
 import { TERRAIN, UNIT_TYPES, BUILDINGS, BUILDING_REQUIREMENT } from '../game/constants';
 import { hexKey, neighbors } from '../game/hex';
-import { shuffle } from '../game/rng';
+import { seededShuffle } from '../game/rng';
 import { resolveUnitCombat, resolveCityAttack } from '../game/logic';
 import { revealArea, checkVictory } from '../game/state';
 
@@ -201,7 +201,12 @@ export const performBuild = (s: GameState, factionId: FactionId, bldgId: Buildin
 // Play a non-targeted card (rally, harvest, muster, feast).
 export const performPlayUntargetedCard = (s: GameState, factionId: FactionId, card: Card): GameState => {
   const faction = s.factions[factionId];
-  if (!faction || faction.orders < card.cost) return s;
+  // Reject if the faction is missing, can't afford the order cost, or the
+  // card isn't actually in hand. The orders/affordability check used to be
+  // the only guard; the hand-membership check makes the helper safe to call
+  // from non-UI code (the AI) without smuggling in a card the seat doesn't hold.
+  if (!faction || faction.orders < card.cost
+      || !faction.hand.some((c) => c.uid === card.uid)) return s;
   const ns: GameState = {
     ...s,
     units: s.units.map((u) => ({ ...u })),
@@ -226,7 +231,12 @@ export const performPlayUntargetedCard = (s: GameState, factionId: FactionId, ca
     let disc = [...f.discard];
     const hand = [...f.hand];
     for (let i = 0; i < 2; i++) {
-      if (!deck.length && disc.length) { deck = shuffle(disc); disc = []; }
+      if (!deck.length && disc.length) {
+        const r = seededShuffle(disc, ns.cardRng);
+        ns.cardRng = r.seed;
+        deck = r.result;
+        disc = [];
+      }
       const drawn = deck.pop();
       if (drawn) hand.push(drawn);
     }
@@ -256,6 +266,13 @@ export const performPlayTargetedCard = (
 ): { state: GameState; valid: boolean } => {
   const faction = s.factions[factionId];
   if (!faction) return { state: s, valid: false };
+  // Orders + hand-membership guards mirror the untargeted helper. Targeted
+  // play previously leaned on the UI pre-check (GameScreen gates the dispatch
+  // on faction.orders >= card.cost); doing it here too makes the resolver the
+  // single source of truth and safe for the AI to call directly. Both return
+  // valid:false so callers leave state untouched.
+  if (faction.orders < card.cost) return { state: s, valid: false };
+  if (!faction.hand.some((c) => c.uid === card.uid)) return { state: s, valid: false };
   const ns: GameState = {
     ...s,
     units: s.units.map((u) => ({ ...u })),

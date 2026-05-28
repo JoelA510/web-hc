@@ -5,7 +5,7 @@ import type {
   Hex, HexKey, UnitType,
 } from '../game/types';
 import { HEX_NAV, hexKey } from '../game/hex';
-import { computeMoveRange, computeAttackTargets } from '../game/logic';
+import { computeMoveRange, computeAttackTargets, factionHasUnmovedUnit } from '../game/logic';
 import { initialState } from '../game/state';
 import { reducer } from '../game/reducer';
 import { debouncedSaveGame, clearSave, flushPendingSave } from '../game/persist';
@@ -52,9 +52,18 @@ export function GameScreen({ config, onExit, initialState: resumed }: GameScreen
   const [showTutorial, setShowTutorial] = useState(() => prefs.tutorial === 'unseen');
   const [openCityId, setOpenCityId] = useState<number | null>(null);
   // End-Turn confirmation dialog state. Only engaged when the user's
-  // `confirmEndTurnWithActions` pref is on AND units remain with
-  // unresolved actions.
+  // `confirmEndTurnWithActions` pref is on AND the viewer still has an
+  // unmoved unit with a legal move.
   const [endTurnConfirm, setEndTurnConfirm] = useState(false);
+  // Game-scoped opt-out of the End-Turn warning. Set when the user ticks the
+  // modal's "don't warn me again this game" box and confirms. Intentionally
+  // local React state, NOT a persisted pref: it resets automatically when a
+  // new game starts because App.tsx remounts GameScreen via `key={gameKey}`.
+  // The global `confirmEndTurnWithActions` pref stays the master switch.
+  const [suppressEndTurnWarning, setSuppressEndTurnWarning] = useState(false);
+  // Transient checkbox state inside the modal; committed to
+  // `suppressEndTurnWarning` only if the user confirms "End turn anyway".
+  const [dontWarnThisGame, setDontWarnThisGame] = useState(false);
   // Board view transform. `zoom` is a multiplier on the current viewBox;
   // `pan` is an offset in SVG units applied to the viewBox origin.
   const [zoom, setZoom] = useState(1);
@@ -209,34 +218,36 @@ export function GameScreen({ config, onExit, initialState: resumed }: GameScreen
     dispatch({ type: 'BUILD', factionId: viewerFactionId, building: id });
   };
 
-  // Does the viewer still have units with unspent actions? (Either unspent
-  // move budget or un-acted attack capability.) Used to gate the End-Turn
-  // confirmation modal so we only nag when there's actually something
-  // worth stopping for.
-  const viewerHasPendingActions = (): boolean => {
-    for (const u of state.units) {
-      if (u.faction !== viewerFactionId) continue;
-      if (u.acted) continue;
-      // Unit hasn't spent its full move budget, OR hasn't acted at all.
-      return true;
-    }
-    return false;
-  };
-
   // -- End turn: reducer handles the AI loop + pass-device gate atomically,
   // and clears selection as part of the same transition. Optionally prompts
-  // first when the user has `confirmEndTurnWithActions` set and the viewer
-  // has un-spent actions.
+  // first when the user has `confirmEndTurnWithActions` set, hasn't muted the
+  // warning for this game, and the viewer still has an unmoved unit that could
+  // legally move. The "unmoved unit with a legal move" check lives in the rule
+  // engine (factionHasUnmovedUnit) so it stays consistent with movement rules.
   const doEndTurn = () => {
     setOpenCityId(null);
     dispatch({ type: 'END_TURN', viewerFactionId });
   };
   const endTurn = () => {
     if (!isViewerActive || ended) return;
-    if (prefs.confirmEndTurnWithActions && viewerHasPendingActions()) {
+    if (prefs.confirmEndTurnWithActions && !suppressEndTurnWarning
+        && factionHasUnmovedUnit(state, viewerFactionId)) {
       setEndTurnConfirm(true);
       return;
     }
+    doEndTurn();
+  };
+  // Dismiss the modal without ending the turn. Resets only the transient
+  // checkbox; any already-committed per-game suppression stays.
+  const dismissEndTurnConfirm = () => {
+    setEndTurnConfirm(false);
+    setDontWarnThisGame(false);
+  };
+  // "End turn anyway": commit the per-game suppression if the box is ticked,
+  // then proceed. Reads the current `dontWarnThisGame` before the state reset.
+  const confirmEndTurnAnyway = () => {
+    if (dontWarnThisGame) setSuppressEndTurnWarning(true);
+    dismissEndTurnConfirm();
     doEndTurn();
   };
 
@@ -645,7 +656,7 @@ export function GameScreen({ config, onExit, initialState: resumed }: GameScreen
           aria-modal="true"
           aria-labelledby="endturn-confirm-title"
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-          onClick={() => setEndTurnConfirm(false)}
+          onClick={dismissEndTurnConfirm}
         >
           <div
             className="bg-gradient-to-b from-amber-100 to-amber-50 border-2 border-amber-700 rounded-lg p-5 max-w-sm w-full m-4 shadow-2xl"
@@ -653,19 +664,28 @@ export function GameScreen({ config, onExit, initialState: resumed }: GameScreen
           >
             <h2 id="endturn-confirm-title" className="text-xl font-bold mb-2">End turn?</h2>
             <p className="text-sm text-stone-800 mb-4">
-              You still have units with actions remaining. Are you sure you want to end your turn?
+              You still have units that haven't moved. Are you sure you want to end your turn?
             </p>
+            <label className="flex items-start gap-2 mb-4 text-sm text-stone-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={dontWarnThisGame}
+                onChange={(e) => setDontWarnThisGame(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>Don't warn me again this game</span>
+            </label>
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
-                onClick={() => setEndTurnConfirm(false)}
+                onClick={dismissEndTurnConfirm}
                 className="bg-stone-200 hover:bg-stone-300 text-stone-900 font-semibold px-4 py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
               >
                 Keep playing
               </button>
               <button
                 type="button"
-                onClick={() => { setEndTurnConfirm(false); doEndTurn(); }}
+                onClick={confirmEndTurnAnyway}
                 autoFocus
                 className="bg-amber-700 hover:bg-amber-800 text-white font-semibold px-4 py-2 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
               >

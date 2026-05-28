@@ -56,7 +56,7 @@ describe('seat/faction decoupling domain behavior', () => {
     expect(state.factions.f1.pattern).toBe(preset?.pattern);
     expect(state.factions.f1.unitPool).toBe(preset?.unitPool);
 
-    const deck = makeStarterDeck('f2');
+    const { deck } = makeStarterDeck('f2', 123);
     expect(deck.every((c) => c.uid.startsWith('f2:'))).toBe(true);
   });
 

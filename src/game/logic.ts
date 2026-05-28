@@ -1,4 +1,4 @@
-import type { City, GameState, Unit } from './types';
+import type { City, FactionId, GameState, Unit } from './types';
 import { TERRAIN, UNIT_TYPES } from './constants';
 import { hexKey, hexDistance, neighbors } from './hex';
 
@@ -54,6 +54,24 @@ export const computeMoveRange = (unit: Unit, state: GameState): Map<string, numb
   }
   reachable.delete(hexKey(unit.q, unit.r));
   return reachable;
+};
+
+// Does the faction have at least one unit that hasn't moved this turn AND
+// still has a legal hex to move into? Drives the End-Turn "unmoved units"
+// warning. Deliberately keyed on movement only — NOT on `acted`: a unit that
+// can still attack but has no move left shouldn't trip an "unmoved" warning,
+// and a unit that already spent any movement (moved > 0, including one that
+// attacked — performPlayerAttack sets moved to full) is excluded. Units with
+// no legal move (surrounded / out of budget) yield an empty computeMoveRange
+// and are skipped too. `state.units` only holds living units.
+export const factionHasUnmovedUnit = (state: GameState, factionId: FactionId): boolean => {
+  for (const u of state.units) {
+    if (u.faction !== factionId) continue;
+    if (u.moved > 0) continue;
+    if (computeMoveRange(u, state).size === 0) continue;
+    return true;
+  }
+  return false;
 };
 
 // Returns attack targets in range: any enemy unit or enemy city. Unit

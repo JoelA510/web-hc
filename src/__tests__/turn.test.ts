@@ -125,6 +125,11 @@ describe('AI seat income + regen', () => {
     const foodBefore = s.factions[aiId].food;
 
     applyStartOfSeatTurn(s, aiId);
+    // Clear the AI's hand so the card phase can't play Harvest/Feast (which
+    // legitimately ADD gold/food). This test isolates the income/regen
+    // separation — that runAITurnFor grants neither income nor regen — from
+    // card effects, which are exercised in ai.cards.test.ts.
+    s.factions[aiId].hand = [];
     runAITurnFor(s, aiId);
 
     const aiAfter = s.factions[aiId];

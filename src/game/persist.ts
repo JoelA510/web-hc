@@ -1,4 +1,5 @@
 import { FACTION_PRESETS, RUNTIME_FACTION_IDS } from './constants';
+import { deriveCardRngSeed } from './rng';
 import type { FactionId, FactionPresetId, FactionState, GameState } from './types';
 
 // localStorage key for the single autosave slot. Single slot is intentional:
@@ -196,6 +197,11 @@ export const migrateLoadedGameState = (parsed: unknown): GameState | null => {
 
   return fromSerializable({
     ...(parsed as SerializableGameState),
+    // Pre-cardRng saves won't carry this field; derive a deterministic default
+    // from the (validated, finite) seed so post-load reshuffles stay seeded.
+    cardRng: Number.isFinite(parsed.cardRng)
+      ? (parsed.cardRng as number)
+      : deriveCardRngSeed(parsed.seed as number),
     seats: migratedSeats as SerializableGameState['seats'],
     activeSeatIdx: migratedActiveSeatIdx,
     config: migratedConfig,

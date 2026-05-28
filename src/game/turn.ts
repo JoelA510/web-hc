@@ -1,7 +1,7 @@
 import type { FactionId, GameState, HexKey, Seat } from './types';
 import { TERRAIN } from './constants';
 import { hexKey, neighbors } from './hex';
-import { shuffle } from './rng';
+import { seededShuffle } from './rng';
 import { revealArea } from './state';
 
 // Run end-of-turn housekeeping for one seat: yields, city regen, log entry.
@@ -48,7 +48,9 @@ export const applyEndOfSeatTurn = (ns: GameState, factionId: FactionId): void =>
 };
 
 // Start-of-turn housekeeping for one seat: reset unit flags, refresh orders,
-// draw cards (humans only), reveal around units/cities.
+// draw cards, reveal around units/cities. Applies to whichever faction is
+// starting its turn — human or AI — so both share one card economy. Only
+// living seats reach here (via nextLivingSeat, or seat 0 at init).
 export const applyStartOfSeatTurn = (ns: GameState, factionId: FactionId): void => {
   const faction = ns.factions[factionId];
   if (!faction) return;
@@ -70,33 +72,32 @@ export const applyStartOfSeatTurn = (ns: GameState, factionId: FactionId): void 
   const ordersBonus = faction.buildings.has('war_council') ? 1 : 0;
   faction.orders = 3 + ordersBonus;
 
-  if (faction.kind === 'human') {
-    const drawCount = 1 + (faction.buildings.has('tavern') ? 1 : 0);
-    const deck = [...faction.deck];
-    let discard = [...faction.discard];
-    const hand = [...faction.hand];
-    for (let i = 0; i < drawCount; i++) {
-      if (hand.length >= 7) break;
-      if (!deck.length && discard.length) {
-        const reshuffled = shuffle(discard);
-        deck.push(...reshuffled);
-        discard = [];
-      }
-      const drawn = deck.pop();
-      if (drawn) hand.push(drawn);
+  const drawCount = 1 + (faction.buildings.has('tavern') ? 1 : 0);
+  const deck = [...faction.deck];
+  let discard = [...faction.discard];
+  const hand = [...faction.hand];
+  for (let i = 0; i < drawCount; i++) {
+    if (hand.length >= 7) break;
+    if (!deck.length && discard.length) {
+      const { result, seed } = seededShuffle(discard, ns.cardRng);
+      ns.cardRng = seed;
+      deck.push(...result);
+      discard = [];
     }
-    faction.deck = deck;
-    faction.discard = discard;
-    faction.hand = hand;
-
-    const explored = new Set<HexKey>(faction.explored);
-    ns.units.filter((u) => u.faction === factionId).forEach((u) => revealArea(explored, u.q, u.r, 1));
-    ns.cities.filter((c) => c.faction === factionId).forEach((c) => {
-      const radius = faction.buildings.has('watchtower') ? 3 : 2;
-      revealArea(explored, c.q, c.r, radius);
-    });
-    faction.explored = explored;
+    const drawn = deck.pop();
+    if (drawn) hand.push(drawn);
   }
+  faction.deck = deck;
+  faction.discard = discard;
+  faction.hand = hand;
+
+  const explored = new Set<HexKey>(faction.explored);
+  ns.units.filter((u) => u.faction === factionId).forEach((u) => revealArea(explored, u.q, u.r, 1));
+  ns.cities.filter((c) => c.faction === factionId).forEach((c) => {
+    const radius = faction.buildings.has('watchtower') ? 3 : 2;
+    revealArea(explored, c.q, c.r, radius);
+  });
+  faction.explored = explored;
 };
 
 // Find the next living seat after the given index, wrapping. Returns null

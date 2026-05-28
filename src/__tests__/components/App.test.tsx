@@ -41,6 +41,7 @@ const makeResumeState = (): GameState => ({
   turn: 3,
   activeSeatIdx: 0,
   seed: 456,
+  cardRng: 456,
   config: baseConfig,
   map: {},
   mapCols: 8,
