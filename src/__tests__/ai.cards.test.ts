@@ -98,11 +98,18 @@ describe('AI card play via runAICardPhase', () => {
     // Reveal ONLY the enemy's tile so it is the single legal curse target.
     s.factions[aiId].explored = new Set([hexKey(enemy.q, enemy.r)]);
     const hpBefore = s.units.find((u) => u.id === enemy.id)!.hp;
+    const goldBefore = s.factions[aiId].gold;
+    const foodBefore = s.factions[aiId].food;
+    const ordersBefore = s.factions[aiId].orders;
     runAICardPhase(s, aiId);
     expect(s.factions[aiId].totalCardsPlayed).toBe(1);
     const post = s.units.find((u) => u.id === enemy.id);
     if (post) expect(post.hp).toBe(hpBefore - 4);
     else expect(hpBefore).toBeLessThanOrEqual(4); // 4 dmg was lethal
+    // A paid card (Curse, cost 2) spends ONLY orders — never gold/food.
+    expect(s.factions[aiId].orders).toBe(ordersBefore - 2);
+    expect(s.factions[aiId].gold).toBe(goldBefore);
+    expect(s.factions[aiId].food).toBe(foodBefore);
   });
 
   it('does NOT play an offensive targeted card when no legal (explored) target exists', () => {
